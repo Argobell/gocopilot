@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 
@@ -48,7 +49,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	conversation := []openai.ChatCompletionMessageParamUnion{}
 
 	if a.verbose {
-		log.Println("Starting chat session with tools enabled")
+		log.Println("Starting chat session")
 	}
 
 	for {
@@ -104,7 +105,15 @@ func (a *Agent) Run(ctx context.Context) error {
 					log.Printf("Processing %d tool calls", len(message.ToolCalls))
 				}
 
-				for _, toolCallUnion := range message.ToolCalls {
+				results := make([]struct {
+					output  string
+					err     error
+					id      string
+					handled bool
+				}, len(message.ToolCalls))
+				var wg sync.WaitGroup
+
+				for idx, toolCallUnion := range message.ToolCalls {
 					call := toolCallUnion.AsAny()
 					switch tc := call.(type) {
 					case openai.ChatCompletionMessageFunctionToolCall:
@@ -114,37 +123,42 @@ func (a *Agent) Run(ctx context.Context) error {
 						fmt.Printf("\u001b[96mtool\u001b[0m: %s(%s)\n", tc.Function.Name, tc.Function.Arguments)
 
 						toolDef, found := a.toolIndex[tc.Function.Name]
-						var (
-							toolResult string
-							toolError  error
-						)
+						if !found {
+							err := fmt.Errorf("tool '%s' not found", tc.Function.Name)
+							result := err.Error()
+							fmt.Printf("\u001b[91merror\u001b[0m: %s\n", err.Error())
+							fmt.Printf("\u001b[92mresult\u001b[0m: %s\n", result)
+							conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), tc.ID))
+							continue
+						}
+
 						input := json.RawMessage([]byte(tc.Function.Arguments))
-						if found {
-							toolResult, toolError = toolDef.Function(input)
-							fmt.Printf("\u001b[92mresult\u001b[0m: %s\n", toolResult)
-							if toolError != nil {
-								fmt.Printf("\u001b[91merror\u001b[0m: %s\n", toolError.Error())
+
+						wg.Add(1)
+						go func(index int, callID string, def tools.ToolDefinition, payload json.RawMessage) {
+							defer wg.Done()
+
+							toolResult, toolErr := def.Function(payload)
+							results[index] = struct {
+								output  string
+								err     error
+								id      string
+								handled bool
+							}{
+								output:  toolResult,
+								err:     toolErr,
+								id:      callID,
+								handled: true,
 							}
 
 							if a.verbose {
-								if toolError != nil {
-									log.Printf("Tool execution failed: %v", toolError)
+								if toolErr != nil {
+									log.Printf("Tool execution failed: %v", toolErr)
 								} else {
 									log.Printf("Tool execution successful, result length: %d chars", len(toolResult))
 								}
 							}
-						} else {
-							toolError = fmt.Errorf("tool '%s' not found", tc.Function.Name)
-							toolResult = toolError.Error()
-							fmt.Printf("\u001b[91merror\u001b[0m: %s\n", toolError.Error())
-							fmt.Printf("\u001b[92mresult\u001b[0m: %s\n", toolResult)
-						}
-
-						if toolError != nil {
-							conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", toolError.Error()), tc.ID))
-						} else {
-							conversation = append(conversation, openai.ToolMessage(toolResult, tc.ID))
-						}
+						}(idx, tc.ID, toolDef, input)
 
 					case openai.ChatCompletionMessageCustomToolCall:
 						err := fmt.Errorf("unsupported custom tool call: %s", tc.Custom.Name)
@@ -159,6 +173,31 @@ func (a *Agent) Run(ctx context.Context) error {
 						conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), toolCallUnion.ID))
 					}
 				}
+
+				wg.Wait()
+
+				for idx, toolCallUnion := range message.ToolCalls {
+					call := toolCallUnion.AsAny()
+					tc, ok := call.(openai.ChatCompletionMessageFunctionToolCall)
+					if !ok {
+						continue
+					}
+
+					res := results[idx]
+					if !res.handled {
+						continue
+					}
+
+					fmt.Printf("\u001b[92mresult\u001b[0m: %s\n", res.output)
+					if res.err != nil {
+						fmt.Printf("\u001b[91merror\u001b[0m: %s\n", res.err.Error())
+						conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", res.err.Error()), tc.ID))
+						continue
+					}
+
+					conversation = append(conversation, openai.ToolMessage(res.output, tc.ID))
+				}
+
 			}
 
 			if !hasToolCalls {
