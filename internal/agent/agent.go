@@ -20,6 +20,7 @@ type Agent struct {
 	toolParams     []openai.ChatCompletionToolUnionParam
 	toolIndex      map[string]tools.ToolDefinition
 	verbose        bool
+	memory         *Memory
 }
 
 func NewAgent(
@@ -42,15 +43,16 @@ func NewAgent(
 		toolParams:     params,
 		toolIndex:      index,
 		verbose:        verbose,
+		memory:         NewMemory(DefaultMemoryCapacity),
 	}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	conversation := []openai.ChatCompletionMessageParamUnion{}
-
 	if a.verbose {
 		log.Println("Starting chat session")
 	}
+
+	a.memory.ResetHistory()
 
 	for {
 		// The caller prints prompts and reads input via getUserMessage
@@ -74,13 +76,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 
 		userMessage := openai.UserMessage(userInput)
-		conversation = append(conversation, userMessage)
+		a.memory.Append(userMessage)
 
 		if a.verbose {
-			log.Printf("Sending message to Gocopilot, conversation length: %d", len(conversation))
+			log.Printf("Sending message to Gocopilot, conversation length: %d", a.memory.MessageCount())
 		}
 
-		response, err := a.runInference(ctx, conversation)
+		response, err := a.runInference(ctx, a.memory.Context())
 		if err != nil {
 			if a.verbose {
 				log.Printf("Error during inference: %v", err)
@@ -90,7 +92,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		message := response.Choices[0].Message
 		// Track assistant reply for context
-		conversation = append(conversation, message.ToParam())
+		a.memory.Append(message.ToParam())
 
 		for {
 			if message.Content != "" {
@@ -128,7 +130,7 @@ func (a *Agent) Run(ctx context.Context) error {
 							result := err.Error()
 							fmt.Printf("\u001b[91merror\u001b[0m: %s\n", err.Error())
 							fmt.Printf("\u001b[92mresult\u001b[0m: %s\n", result)
-							conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), tc.ID))
+							a.memory.Append(openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), tc.ID))
 							continue
 						}
 
@@ -163,14 +165,14 @@ func (a *Agent) Run(ctx context.Context) error {
 					case openai.ChatCompletionMessageCustomToolCall:
 						err := fmt.Errorf("unsupported custom tool call: %s", tc.Custom.Name)
 						fmt.Printf("\u001b[91merror\u001b[0m: %s\n", err.Error())
-						conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), tc.ID))
+						a.memory.Append(openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), tc.ID))
 					default:
 						err := fmt.Errorf("unsupported tool call type")
 						if a.verbose {
 							log.Printf("Encountered unsupported tool call variant: %T", call)
 						}
 						fmt.Printf("\u001b[91merror\u001b[0m: %s\n", err.Error())
-						conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), toolCallUnion.ID))
+						a.memory.Append(openai.ToolMessage(fmt.Sprintf("Error: %s", err.Error()), toolCallUnion.ID))
 					}
 				}
 
@@ -191,11 +193,11 @@ func (a *Agent) Run(ctx context.Context) error {
 					fmt.Printf("\u001b[92mresult\u001b[0m: %s\n", res.output)
 					if res.err != nil {
 						fmt.Printf("\u001b[91merror\u001b[0m: %s\n", res.err.Error())
-						conversation = append(conversation, openai.ToolMessage(fmt.Sprintf("Error: %s", res.err.Error()), tc.ID))
+						a.memory.Append(openai.ToolMessage(fmt.Sprintf("Error: %s", res.err.Error()), tc.ID))
 						continue
 					}
 
-					conversation = append(conversation, openai.ToolMessage(res.output, tc.ID))
+					a.memory.Append(openai.ToolMessage(res.output, tc.ID))
 				}
 
 			}
@@ -209,7 +211,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 
 			var err error
-			response, err = a.runInference(ctx, conversation)
+			response, err = a.runInference(ctx, a.memory.Context())
 			if err != nil {
 				if a.verbose {
 					log.Printf("Error during followup inference: %v", err)
@@ -218,7 +220,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 
 			message = response.Choices[0].Message
-			conversation = append(conversation, message.ToParam())
+			a.memory.Append(message.ToParam())
 
 			if a.verbose {
 				log.Printf("Received followup response")
