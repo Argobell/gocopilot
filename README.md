@@ -1,15 +1,18 @@
 # Gocopilot
 
-一个基于OpenAI的Go语言AI助手，提供智能代码分析和文件操作功能。
+一个基于OpenAI的Go语言AI助手，提供智能代码分析和文件操作功能。采用模块化架构设计，支持插件化工具系统和并发执行。
 
 ## 功能特性
 
-- 🤖 基于大模型的智能对话
-- 📁 文件读取和目录列表
-- 🔍 代码搜索（使用ripgrep）
-- 📝 文件编辑和创建
-- 🖥️ Bash命令执行
-- 🛠️ 可扩展的工具系统
+-  基于大模型的智能对话
+-  文件读取和目录列表
+-  代码搜索（使用ripgrep）
+-  文件编辑和创建
+-  Bash命令执行
+-  可扩展的插件化工具系统
+-  并发工具执行与性能优化
+-  多步推理链支持
+-  结构化日志系统
 
 ## 快速开始
 
@@ -41,13 +44,16 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_API_BASE_URL=https://api.openai.com/v1  # 可选，默认为OpenAI官方API
-MODEL=gpt-4o-mini  # 可选，默认为gpt-4o-mini
+MODEL=gpt-4  # 可选，默认为gpt-4
+MEMORY_CAPACITY=40  # 对话历史容量
+MAX_CONCURRENCY=5  # 最大并发工具执行数
+MAX_TOKENS=1024  # 最大响应token数
 ```
 
 ### 运行
 
 ```bash
-# 开发模式运行
+# 开发模式运行（推荐用于工具调用）
 go run ./cmd/gocopilot
 
 # 构建二进制文件
@@ -56,6 +62,12 @@ go build ./cmd/gocopilot
 
 # 启用详细日志
 go run ./cmd/gocopilot -verbose
+
+# 启用多步推理模式
+go run ./cmd/gocopilot -reasoning
+
+# 同时启用详细日志和推理模式
+go run ./cmd/gocopilot -verbose -reasoning
 ```
 
 ## 项目结构
@@ -67,10 +79,20 @@ gocopilot/
 │       └── main.go          # CLI入口点
 ├── internal/
 │   ├── agent/
-│   │   └── agent.go         # 智能代理核心逻辑
-│   └── tools/
-│       └── tools.go         # 工具定义和实现
-├── tests/                   # 测试文件
+│   │   ├── agent.go         # 智能代理核心逻辑
+│   │   ├── executor.go      # 并发工具执行器
+│   │   ├── memory.go        # 对话历史管理
+│   │   ├── reasoning.go     # 多步推理链
+│   │   └── types.go         # 接口定义
+│   ├── tools/
+│   │   ├── tools.go         # 工具定义和实现
+│   │   ├── registry.go      # 工具注册系统
+│   │   └── builtin.go       # 内置工具注册
+│   ├── config/
+│   │   └── config.go        # 配置管理
+│   └── logger/
+│       ├── logger.go        # 结构化日志
+│       └── noop.go          # 空日志实现
 ├── go.mod                   # Go模块定义
 ├── go.sum                   # 依赖校验和
 ├── .env.example             # 环境变量示例
@@ -118,10 +140,12 @@ type NewToolInput struct {
 }
 ```
 
-2. 创建工具函数：
+2. 创建工具函数（支持结构化日志）：
 ```go
-func NewTool(input json.RawMessage) (string, error) {
-    // 工具实现
+func NewTool(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
+    // 工具实现，使用log进行结构化日志记录
+    log.Debug("Executing new tool with param: %s", param)
+    // ...
 }
 ```
 
@@ -135,9 +159,13 @@ var NewToolDefinition = ToolDefinition{
 }
 ```
 
-4. 在 [`cmd/gocopilot/main.go`](cmd/gocopilot/main.go) 中添加工具到工具列表。
+4. 在 [`internal/tools/builtin.go`](internal/tools/builtin.go) 中添加工具到内置工具列表。
+
+工具系统会自动处理JSON schema生成、并发执行和错误处理。
 
 ### 测试
+
+项目目前没有测试文件。当添加测试时：
 
 运行所有测试：
 ```bash
@@ -146,7 +174,7 @@ go test ./...
 
 运行特定测试：
 ```bash
-go test ./tests/ -run TestName
+go test ./internal/agent -run TestName
 ```
 
 ### 代码规范
@@ -161,11 +189,16 @@ go test ./tests/ -run TestName
 
 - `OPENAI_API_KEY`: OpenAI API密钥（必需）
 - `OPENAI_API_BASE_URL`: OpenAI API基础URL（可选）
-- `MODEL`: 使用的模型名称（可选，默认：gpt-4o-mini）
+- `MODEL`: 使用的模型名称（可选，默认：gpt-4）
+- `MEMORY_CAPACITY`: 对话历史容量（可选，默认：40）
+- `MAX_CONCURRENCY`: 最大并发工具执行数（可选，默认：5）
+- `MAX_TOKENS`: 最大响应token数（可选，默认：1024）
+- `SYSTEM_MESSAGE`: 系统提示消息（可选）
 
 ### 命令行参数
 
 - `-verbose`: 启用详细日志输出
+- `-reasoning`: 启用多步推理模式
 
 ## 故障排除
 
@@ -182,12 +215,32 @@ go test ./tests/ -run TestName
 3. **文件权限问题**
    - 确保程序对工作目录有读写权限
 
+4. **工具调用问题**
+   - 确保工具参数格式正确
+   - 检查文件路径和权限
+
 ### 调试模式
 
 使用 `-verbose` 标志启用详细日志：
 ```bash
 go run ./cmd/gocopilot -verbose
 ```
+
+### 输出模式
+
+Gocopilot使用批量输出模式，提供稳定的工具调用体验。这是经过优化的版本，移除了stream模式以解决工具调用问题。
+
+### 架构说明
+
+Gocopilot采用模块化架构设计：
+
+- **Agent Core**: 管理对话流程、工具执行和推理链
+- **Tool System**: 插件化工具注册和执行系统，支持并发执行
+- **Memory Management**: 智能对话历史管理，支持系统消息
+- **Configuration**: 统一配置管理，支持环境变量和默认值
+- **Logging**: 结构化日志系统，支持多级别日志输出
+
+系统通过接口抽象实现组件解耦，便于扩展和测试。
 
 ## 贡献指南
 
@@ -206,3 +259,8 @@ go run ./cmd/gocopilot -verbose
 - [OpenAI Go SDK](https://github.com/openai/openai-go) - OpenAI API客户端
 - [jsonschema](https://github.com/invopop/jsonschema) - JSON Schema生成
 - [ripgrep](https://github.com/BurntSushi/ripgrep) - 快速代码搜索工具
+
+## 相关文档
+
+- [CLAUDE.md](CLAUDE.md) - Claude Code开发指南
+- [架构设计](internal/agent/types.go) - 核心接口定义

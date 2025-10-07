@@ -3,7 +3,6 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -18,7 +17,7 @@ type ToolDefinition struct {
 	Name        string                    `json:"name"`
 	Description string                    `json:"description"`
 	InputSchema openai.FunctionParameters `json:"input_schema"`
-	Function    func(input json.RawMessage) (string, error)
+	Function    func(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error)
 }
 
 func (t ToolDefinition) FunctionDefinition() openai.FunctionDefinitionParam {
@@ -111,28 +110,28 @@ var CodeSearchDefinition = ToolDefinition{
 }
 
 // Tool implementations
-func ReadFile(input json.RawMessage) (string, error) {
+func ReadFile(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
 	readFileInput := ReadFileInput{}
 	err := json.Unmarshal(input, &readFileInput)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("invalid input: %w", err)
 	}
 
-	log.Printf("Reading file: %s", readFileInput.Path)
+	log.Debug("Reading file: %s", readFileInput.Path)
 	content, err := os.ReadFile(readFileInput.Path)
 	if err != nil {
-		log.Printf("Failed to read file %s: %v", readFileInput.Path, err)
+		log.Error("Failed to read file %s: %v", readFileInput.Path, err)
 		return "", err
 	}
-	log.Printf("Successfully read file %s (%d bytes)", readFileInput.Path, len(content))
+	log.Debug("Successfully read file %s (%d bytes)", readFileInput.Path, len(content))
 	return string(content), nil
 }
 
-func ListFiles(input json.RawMessage) (string, error) {
+func ListFiles(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
 	listFilesInput := ListFilesInput{}
 	err := json.Unmarshal(input, &listFilesInput)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("invalid input: %w", err)
 	}
 
 	dir := "."
@@ -140,7 +139,7 @@ func ListFiles(input json.RawMessage) (string, error) {
 		dir = listFilesInput.Path
 	}
 
-	log.Printf("Listing files in directory: %s", dir)
+	log.Debug("Listing files in directory: %s", dir)
 
 	var files []string
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -165,11 +164,11 @@ func ListFiles(input json.RawMessage) (string, error) {
 		return nil
 	})
 	if err != nil {
-		log.Printf("Failed to list files in %s: %v", dir, err)
+		log.Error("Failed to list files in %s: %v", dir, err)
 		return "", err
 	}
 
-	log.Printf("Successfully listed %d items in %s", len(files), dir)
+	log.Debug("Successfully listed %d items in %s", len(files), dir)
 
 	result, err := json.Marshal(files)
 	if err != nil {
@@ -179,26 +178,26 @@ func ListFiles(input json.RawMessage) (string, error) {
 	return string(result), nil
 }
 
-func Bash(input json.RawMessage) (string, error) {
+func Bash(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
 	bashInput := BashInput{}
 	err := json.Unmarshal(input, &bashInput)
 	if err != nil {
 		return "", err
 	}
 
-	log.Printf("Executing bash command: %s", bashInput.Command)
+	log.Debug("Executing bash command: %s", bashInput.Command)
 	cmd := exec.Command("nu", "-c", bashInput.Command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("Bash command failed: %s, error: %v", bashInput.Command, err)
+		log.Warn("Bash command failed: %s, error: %v", bashInput.Command, err)
 		return fmt.Sprintf("Command failed with error: %s\nOutput: %s", err.Error(), string(output)), nil
 	}
 
-	log.Printf("Bash command succeeded: %s (output: %d bytes)", bashInput.Command, len(output))
+	log.Debug("Bash command succeeded: %s (output: %d bytes)", bashInput.Command, len(output))
 	return strings.TrimSpace(string(output)), nil
 }
 
-func EditFile(input json.RawMessage) (string, error) {
+func EditFile(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
 	editFileInput := EditFileInput{}
 	err := json.Unmarshal(input, &editFileInput)
 	if err != nil {
@@ -206,18 +205,18 @@ func EditFile(input json.RawMessage) (string, error) {
 	}
 
 	if editFileInput.Path == "" || editFileInput.OldStr == editFileInput.NewStr {
-		log.Printf("EditFile failed: invalid input parameters")
+		log.Error("EditFile failed: invalid input parameters")
 		return "", fmt.Errorf("invalid input parameters")
 	}
 
-	log.Printf("Editing file: %s (replacing %d chars with %d chars)", editFileInput.Path, len(editFileInput.OldStr), len(editFileInput.NewStr))
+	log.Debug("Editing file: %s (replacing %d chars with %d chars)", editFileInput.Path, len(editFileInput.OldStr), len(editFileInput.NewStr))
 	content, err := os.ReadFile(editFileInput.Path)
 	if err != nil {
 		if os.IsNotExist(err) && editFileInput.OldStr == "" {
-			log.Printf("File does not exist, creating new file: %s", editFileInput.Path)
-			return createNewFile(editFileInput.Path, editFileInput.NewStr)
+			log.Debug("File does not exist, creating new file: %s", editFileInput.Path)
+			return createNewFile(editFileInput.Path, editFileInput.NewStr, log)
 		}
-		log.Printf("Failed to read file %s: %v", editFileInput.Path, err)
+		log.Error("Failed to read file %s: %v", editFileInput.Path, err)
 	}
 	oldContent := string(content)
 
@@ -229,11 +228,11 @@ func EditFile(input json.RawMessage) (string, error) {
 		// count occurrences first to ensure we have exactly one match
 		count := strings.Count(oldContent, editFileInput.OldStr)
 		if count == 0 {
-			log.Printf("EditFile failed: old_str not found in file %s", editFileInput.Path)
+			log.Error("EditFile failed: old_str not found in file %s", editFileInput.Path)
 			return "", fmt.Errorf("old_str not found in file")
 		}
 		if count > 1 {
-			log.Printf("EditFile failed: old_str found %d times in file %s, must be unique", count, editFileInput.Path)
+			log.Error("EditFile failed: old_str found %d times in file %s, must be unique", count, editFileInput.Path)
 			return "", fmt.Errorf("old_str found %d times in file, must be unique", count)
 		}
 
@@ -242,15 +241,15 @@ func EditFile(input json.RawMessage) (string, error) {
 
 	err = os.WriteFile(editFileInput.Path, []byte(newContent), 0644)
 	if err != nil {
-		log.Printf("Failed to write file %s: %v", editFileInput.Path, err)
+		log.Error("Failed to write file %s: %v", editFileInput.Path, err)
 		return "", err
 	}
 
-	log.Printf("Successfully edited file %s", editFileInput.Path)
+	log.Debug("Successfully edited file %s", editFileInput.Path)
 	return "OK", nil
 }
 
-func CodeSearch(input json.RawMessage) (string, error) {
+func CodeSearch(input json.RawMessage, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
 	codeSearchInput := CodeSearchInput{}
 	err := json.Unmarshal(input, &codeSearchInput)
 	if err != nil {
@@ -258,11 +257,11 @@ func CodeSearch(input json.RawMessage) (string, error) {
 	}
 
 	if codeSearchInput.Pattern == "" {
-		log.Printf("CodeSearch failed: pattern is required")
+		log.Error("CodeSearch failed: pattern is required")
 		return "", fmt.Errorf("pattern is required")
 	}
 
-	log.Printf("Searching for pattern: %s", codeSearchInput.Pattern)
+	log.Debug("Searching for pattern: %s", codeSearchInput.Pattern)
 
 	// Build ripgrep command
 	args := []string{"rg", "--line-number", "--with-filename", "--color=never"}
@@ -287,9 +286,7 @@ func CodeSearch(input json.RawMessage) (string, error) {
 		args = append(args, ".")
 	}
 
-	if a := false; a { // This is a hack to access verbose mode
-		log.Printf("Executing ripgrep with args: %v", args)
-	}
+	log.Debug("Executing ripgrep with args: %v", args)
 
 	cmd := exec.Command(args[0], args[1:]...)
 	output, err := cmd.Output()
@@ -297,17 +294,17 @@ func CodeSearch(input json.RawMessage) (string, error) {
 	// ripgrep returns exit code 1 when no matches are found, which is not an error
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
-			log.Printf("No matches found for pattern: %s", codeSearchInput.Pattern)
+			log.Debug("No matches found for pattern: %s", codeSearchInput.Pattern)
 			return "No matches found", nil
 		}
-		log.Printf("Ripgrep command failed: %v", err)
+		log.Error("Ripgrep command failed: %v", err)
 		return "", fmt.Errorf("search failed: %w", err)
 	}
 
 	result := strings.TrimSpace(string(output))
 	lines := strings.Split(result, "\n")
 
-	log.Printf("Found %d matches for pattern: %s", len(lines), codeSearchInput.Pattern)
+	log.Debug("Found %d matches for pattern: %s", len(lines), codeSearchInput.Pattern)
 
 	// Limit output to prevent overwhelming responses
 	if len(lines) > 50 {
@@ -317,25 +314,25 @@ func CodeSearch(input json.RawMessage) (string, error) {
 	return result, nil
 }
 
-func createNewFile(filePath, content string) (string, error) {
-	log.Printf("Creating new file: %s (%d bytes)", filePath, len(content))
+func createNewFile(filePath, content string, log interface{ Debug(format string, args ...interface{}); Error(format string, args ...interface{}); Warn(format string, args ...interface{}) }) (string, error) {
+	log.Debug("Creating new file: %s (%d bytes)", filePath, len(content))
 	dir := path.Dir(filePath)
 	if dir != "." {
-		log.Printf("Creating directory: %s", dir)
+		log.Debug("Creating directory: %s", dir)
 		err := os.MkdirAll(dir, 0755)
 		if err != nil {
-			log.Printf("Failed to create directory %s: %v", dir, err)
+			log.Error("Failed to create directory %s: %v", dir, err)
 			return "", fmt.Errorf("failed to create directory: %w", err)
 		}
 	}
 
 	err := os.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
-		log.Printf("Failed to write file %s: %v", filePath, err)
+		log.Error("Failed to write file %s: %v", filePath, err)
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
-	log.Printf("Successfully created file %s", filePath)
+	log.Debug("Successfully created file %s", filePath)
 	return fmt.Sprintf("Successfully created file %s", filePath), nil
 }
 

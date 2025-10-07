@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -13,62 +12,104 @@ import (
 	"github.com/openai/openai-go/v3/option"
 
 	"gocopilot/internal/agent"
+	"gocopilot/internal/config"
+	"gocopilot/internal/logger"
 	"gocopilot/internal/tools"
 )
 
 func main() {
 	verbose := flag.Bool("verbose", false, "enable verbose logging")
+	reasoning := flag.Bool("reasoning", false, "enable multi-step reasoning chain")
 	flag.Parse()
 
-	if *verbose {
-		log.SetOutput(os.Stderr)
-		log.SetFlags(log.LstdFlags | log.Lshortfile)
-		log.Println("Verbose logging enabled")
-	} else {
-		log.SetOutput(os.Stdout)
-		log.SetFlags(0)
-		log.SetPrefix("")
-	}
-
+	// Load configuration
 	if err := godotenv.Load(); err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
+		fmt.Printf("Error loading .env file: %v\n", err)
+		os.Exit(1)
 	}
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	baseURL := os.Getenv("OPENAI_API_BASE_URL")
+	cfg := config.Load()
+	cfg.Verbose = *verbose
 
+	// Setup logger
+	var logLevel logger.Level
+	if cfg.Verbose {
+		logLevel = logger.LevelDebug
+	} else {
+		logLevel = logger.LevelInfo
+	}
+	log := logger.New(logLevel)
+
+	// Initialize OpenAI client
 	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(baseURL),
+		option.WithAPIKey(cfg.OpenAIAPIKey),
+		option.WithBaseURL(cfg.OpenAIBaseURL),
 	)
-	if *verbose {
-		log.Println("OpenAI client initialized")
+
+	log.Info("OpenAI client initialized")
+
+	// Initialize tool registry
+	toolRegistry := tools.NewRegistry()
+	if err := tools.RegisterBuiltinTools(toolRegistry, log); err != nil {
+		log.Error("Failed to register built-in tools: %v", err)
+		os.Exit(1)
 	}
 
+	// Setup user input
 	scanner := bufio.NewScanner(os.Stdin)
-	getUserMessage := func() (string, bool) {
-		fmt.Print("\u001b[94mYou\u001b[0m: ")
-		if !scanner.Scan() {
-			return "", false
-		}
-		return scanner.Text(), true
+	inputProvider := &ConsoleInputProvider{scanner: scanner}
+
+	// Setup output handler
+	outputHandler := &agent.DefaultOutputHandler{}
+
+	gocopilot := agent.NewAgent(
+		&OpenAIClientWrapper{client: &client},
+		inputProvider,
+		outputHandler,
+		toolRegistry,
+		cfg,
+		log,
+	)
+
+	fmt.Println("🤖 [1;36mGocopilot[0m - AI-powered coding assistant")
+	fmt.Println("Type your questions or commands below (use 'ctrl-c' to quit)")
+	fmt.Println()
+
+	if *reasoning {
+		log.Info("Multi-step reasoning mode enabled")
+		fmt.Println("[33m🔍 Multi-step reasoning mode enabled[0m")
+		fmt.Println("Agent will reason through complex problems step by step")
+		fmt.Println()
 	}
 
-	toolDefs := []tools.ToolDefinition{
-		tools.ReadFileDefinition,
-		tools.ListFilesDefinition,
-		tools.BashDefinition,
-		tools.EditFileDefinition,
-		tools.CodeSearchDefinition,
-	}
-	if *verbose {
-		log.Printf("Initialized %d tools", len(toolDefs))
-	}
 
-	fmt.Println("Chat with Gocopilot (use 'ctrl-c' to quit)")
-
-	gocopilot := agent.NewAgent(&client, getUserMessage, toolDefs, *verbose)
 	if err := gocopilot.Run(context.TODO()); err != nil {
 		fmt.Printf("Error: %s\n", err.Error())
+		os.Exit(1)
 	}
+}
+
+// ConsoleInputProvider implements UserInputProvider for console input
+type ConsoleInputProvider struct {
+	scanner *bufio.Scanner
+}
+
+func (c *ConsoleInputProvider) GetUserMessage() (string, bool) {
+	fmt.Print("\u001b[1;34m💬 You\u001b[0m: ")
+	if !c.scanner.Scan() {
+		return "", false
+	}
+	return c.scanner.Text(), true
+}
+
+// OpenAIClientWrapper wraps the OpenAI client to implement InferenceClient
+type OpenAIClientWrapper struct {
+	client *openai.Client
+}
+
+func (w *OpenAIClientWrapper) ChatCompletion(
+	ctx context.Context,
+	params openai.ChatCompletionNewParams,
+) (*openai.ChatCompletion, error) {
+	return w.client.Chat.Completions.New(ctx, params)
 }
