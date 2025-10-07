@@ -55,8 +55,8 @@ func NewAgent(
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	a.logger.Info("Starting chat session")
-	a.memory.ResetHistory()
+    a.logger.Info("Starting chat session")
+    a.memory.ResetHistory()
 
 	// Set system message if provided
 	if systemMsg := os.Getenv("SYSTEM_MESSAGE"); systemMsg != "" {
@@ -75,17 +75,26 @@ func (a *Agent) Run(ctx context.Context) error {
 			continue
 		}
 
-		a.logger.Debug("User input received: %q", userInput)
+        a.logger.Debug("User input received: %q", userInput)
 
-		userMessage := openai.UserMessage(userInput)
-		a.memory.Append(userMessage)
+        // If reasoning mode is enabled, use the ReasoningChain to handle this turn.
+        if a.config.ReasoningEnabled {
+            chain := NewReasoningChain(a.config.ReasoningMaxSteps, a.logger)
+            if _, err := chain.Execute(ctx, a, userInput); err != nil {
+                a.logger.Error("Error during reasoning execution: %v", err)
+                return err
+            }
+        } else {
+            userMessage := openai.UserMessage(userInput)
+            a.memory.Append(userMessage)
 
-		a.logger.Debug("Sending message to Gocopilot, conversation length: %d", a.memory.MessageCount())
+            a.logger.Debug("Sending message to Gocopilot, conversation length: %d", a.memory.MessageCount())
 
-		if err := a.processConversation(ctx); err != nil {
-			a.logger.Error("Error during conversation processing: %v", err)
-			return err
-		}
+            if err := a.processConversation(ctx); err != nil {
+                a.logger.Error("Error during conversation processing: %v", err)
+                return err
+            }
+        }
 
 		fmt.Println() // Add empty line between interactions
 	}

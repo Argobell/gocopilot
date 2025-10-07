@@ -18,9 +18,9 @@ import (
 )
 
 func main() {
-	verbose := flag.Bool("verbose", false, "enable verbose logging")
-	reasoning := flag.Bool("reasoning", false, "enable multi-step reasoning chain")
-	flag.Parse()
+    verbose := flag.Bool("verbose", false, "enable verbose logging")
+    reasoning := flag.Bool("reasoning", false, "enable multi-step reasoning chain")
+    flag.Parse()
 
 	// Load configuration
 	if err := godotenv.Load(); err != nil {
@@ -28,8 +28,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg := config.Load()
-	cfg.Verbose = *verbose
+    cfg := config.Load()
+    cfg.Verbose = *verbose
+    cfg.ReasoningEnabled = *reasoning
 
 	// Setup logger
 	var logLevel logger.Level
